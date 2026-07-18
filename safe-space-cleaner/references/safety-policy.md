@@ -4,7 +4,7 @@
 
 Classify every finding before proposing an action:
 
-1. **Verified automatic**: disposable content under a fixed allowlisted root, older than the retention cutoff, and reproducible without user data loss.
+1. **Verified automatic**: age-qualified temporary content under a fixed allowlisted root; pure cache under a fixed allowlisted root when its owning application is closed; or a verified pip, uv, or npm cache action through the owning command.
 2. **Review required**: content is normally reproducible but may affect diagnostics, offline work, first-run performance, authentication state, or an active application; or it is a user-visible installer, archive, or large file.
 3. **Protected**: operating-system state, rollback data, user content, cloud availability, virtual disks, package environments, project dependencies, or any path whose ownership is uncertain.
 
@@ -13,6 +13,8 @@ When evidence is insufficient, move an item to the more restrictive class.
 ## Automatic deletion contract
 
 Audit and cleanup are separate operations. Audit writes an immutable JSON plan and derives a SHA-256 confirmation token from the exact file bytes. Cleanup must reject a missing, changed, truncated, or reformatted plan.
+
+General cleanup authorization covers both verified default plans: the exact-file temporary/cache plan and the owning-command pip/uv/npm cache plan. It never authorizes review-required candidates.
 
 For every planned file, cleanup must re-check:
 
@@ -26,9 +28,21 @@ For every planned file, cleanup must re-check:
 
 Delete with a literal file path only. Do not use wildcards and do not recursively delete parent directories. A locked, missing, changed, inaccessible, or validation-failing file is a recorded skip or failure, never a reason to weaken the guard.
 
+For a browser or IDE cache, include only named pure-cache subdirectories and only while the owning process is absent. Rebuild the allowlist immediately before cleanup; if the process starts after audit, reject the affected planned category.
+
+For pip, uv, and npm caches, cleanup must also re-check:
+
+- the owning executable remains installed at the audited path;
+- the owning tool still reports the exact approved default cache root on the selected drive;
+- the plan token and cache root are unchanged;
+- a configured process guard is not active;
+- the official command exits successfully.
+
+Run only `py -m pip cache purge`, `uv cache clean`, `npm cache clean --force`, and `npm cache npx rm --force`. Never hard-delete these cache roots. Record the before/after file count and size, command exit code, bounded output summary, measured drive-space change, and one final status for every action.
+
 ## Review approval contract
 
-General language such as "clean my drive" authorizes only the verified automatic plan. Require the user to identify review candidates by generated ID or exact path before acting.
+Require the user to identify review candidates by generated ID or exact path before acting. General language such as "clean my drive" authorizes only the two verified default plans described above.
 
 Before executing an approved review action:
 

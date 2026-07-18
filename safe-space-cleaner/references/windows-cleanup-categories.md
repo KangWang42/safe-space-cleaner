@@ -6,13 +6,13 @@
 | --- | --- | --- | --- |
 | Current-user `%TEMP%`, age-qualified | Verified automatic | Exact planned files only | Applications recreate temporary files; locked/current files are retained |
 | `Windows\Temp`, age-qualified | Verified automatic | Exact planned files only, no forced elevation | Protected and locked files are retained |
-| DirectX shader cache, age-qualified | Verified automatic in Aggressive | Exact planned files only | Shaders are rebuilt and an application may be slower on first use |
-| NVIDIA/other vendor shader caches | Review required | Close GPU applications; use vendor-supported controls when available | Temporary shader compilation stutter |
-| Browser or IDE cache roots | Review required | Prefer the application's clear-cache interface; close the application | Slower first load; never touch profile/sign-in data |
+| DirectX shader cache | Verified automatic | Exact planned files, no age threshold | Shaders are rebuilt and an application may be slower on first use |
+| NVIDIA DX/GL shader caches | Verified automatic | Exact planned files, no age threshold; locked files remain | Temporary shader compilation stutter |
+| Edge, Chrome, Firefox, or VS Code named pure-cache roots | Verified automatic while the owning application is closed | Exact planned files, no age threshold | Slower first load; never touch profile, sign-in, or session data |
 | Crash dumps and Windows Error Reporting | Review required | Retain while diagnosing; otherwise select exact dumps or use Windows cleanup | Loses diagnostic evidence |
-| pip cache | Review required | `py -m pip cache purge` | Later installs may download or rebuild packages |
-| uv cache | Review required | `uv cache clean`; do not delete the directory directly | Later operations may download/rebuild; symlink link mode can couple environments to cache data |
-| npm cache | Review required | `npm cache clean --force` | Later operations may download packages again |
+| pip cache | Verified automatic through owning command | `py -m pip cache purge` | Later installs may download or rebuild packages |
+| uv cache | Verified automatic through owning command | `uv cache clean`; never delete the directory directly | Later operations may download/rebuild; symlink link mode can couple environments to cache data |
+| npm content and npx caches | Verified automatic through owning commands | `npm cache clean --force`; `npm cache npx rm --force` | Later npm or npx operations may download packages again |
 | NuGet, Gradle, Maven, Cargo, Conda caches | Review required | Use the owning tool after reviewing local/offline artifacts | Offline builds may fail; locally installed artifacts may be unique |
 | Old installers and archives | Review required, item level | Open/identify/back up, then delete exact unchanged file | May be the only copy or needed for reinstall |
 | Large user files | Review required, item level | Identify ownership and backup before deletion | User content |

@@ -15,7 +15,52 @@ $document = Get-Content -Raw -Encoding UTF8 -LiteralPath $Path | ConvertFrom-Jso
 $warnings = New-Object 'System.Collections.Generic.List[string]'
 $errors = New-Object 'System.Collections.Generic.List[string]'
 
-if ($document.PSObject.Properties.Name -contains 'AutoSummary') {
+if (($document.PSObject.Properties.Name -contains 'ManagedActions') -and
+    ($document.PSObject.Properties.Name -contains 'Summary')) {
+    $actions = @($document.ManagedActions)
+    if ($actions.Count -ne [int]$document.Summary.PlannedActions) {
+        [void]$errors.Add('Managed action count does not match Summary.PlannedActions.')
+    }
+
+    $executed = @($actions | Where-Object { $_.Status -eq 'Executed' }).Count
+    if ($executed -ne [int]$document.Summary.ExecutedActions) {
+        [void]$errors.Add('Executed managed action count does not match Summary.ExecutedActions.')
+    }
+
+    $reclaimed = [Int64](($actions | Measure-Object ReclaimedBytes -Sum).Sum)
+    if ($reclaimed -ne [Int64]$document.Summary.ReclaimedBytes) {
+        [void]$errors.Add('Managed reclaimed bytes do not match action totals.')
+    }
+
+    foreach ($action in $actions) {
+        if ($action.Status -in @('Failed', 'SkippedValidation')) {
+            [void]$errors.Add(('{0}: {1}' -f $action.Status, $action.Id))
+        }
+        elseif ($action.Status -eq 'SkippedProcessRunning') {
+            [void]$warnings.Add(('{0}: {1}' -f $action.Status, $action.Id))
+        }
+        elseif ($action.Status -ne 'Executed') {
+            [void]$errors.Add(('Unknown managed cleanup status {0}: {1}' -f $action.Status, $action.Id))
+        }
+    }
+}
+elseif (($document.PSObject.Properties.Name -contains 'ManagedActions') -and
+    ($document.PSObject.Properties.Name -contains 'DriveState')) {
+    foreach ($issue in @($document.Issues)) {
+        [void]$warnings.Add(('{0}: {1}' -f $issue.Id, $issue.Reason))
+    }
+}
+elseif (($document.PSObject.Properties.Name -contains 'ManagedActions') -and
+    ($document.PSObject.Properties.Name -contains 'TestMode')) {
+    foreach ($action in @($document.ManagedActions)) {
+        if ([string]::IsNullOrWhiteSpace([string]$action.Id) -or
+            [string]::IsNullOrWhiteSpace([string]$action.Root) -or
+            [string]::IsNullOrWhiteSpace([string]$action.Executable)) {
+            [void]$errors.Add('Managed plan contains an incomplete action.')
+        }
+    }
+}
+elseif ($document.PSObject.Properties.Name -contains 'AutoSummary') {
     $categoryFiles = [Int64](($document.AutoCategories | Measure-Object Files -Sum).Sum)
     $categoryBytes = [Int64](($document.AutoCategories | Measure-Object Bytes -Sum).Sum)
     if ($categoryFiles -ne [Int64]$document.AutoSummary.Files) {
@@ -45,7 +90,7 @@ elseif ($document.PSObject.Properties.Name -contains 'Actions') {
         if ($action.Status -in @('Failed', 'SkippedValidation')) {
             [void]$errors.Add(('{0}: {1}' -f $action.Status, $action.Path))
         }
-        elseif ($action.Status -in @('SkippedChanged', 'SkippedMissing')) {
+        elseif ($action.Status -in @('SkippedChanged', 'SkippedMissing', 'SkippedLocked', 'SkippedAccessDenied')) {
             [void]$warnings.Add(('{0}: {1}' -f $action.Status, $action.Path))
         }
         elseif ($action.Status -ne 'Deleted') {

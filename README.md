@@ -1,166 +1,65 @@
 # Safe Space Cleaner
 
-面向 Codex 的 Windows 安全空间清理 skill。默认审计 `C:` 盘，以“可直接清理、需要选择、绝不直删”三层策略释放空间，并生成可逐项复核的 Markdown、CSV 和 JSON 报告。
+Windows 安全空间清理 skill。默认清理 `C:` 盘，只处理白名单内的临时文件和可重建缓存；每次都先审计，确认后再删除，并生成完整报告。
 
-Safe Space Cleaner is an auditable Windows disk-cleanup skill for Codex. It separates verified temporary files from review-required candidates and protected system or user data.
+`审计 → 显示计划 → 令牌确认 → 逐项复核 → 删除 → 报告`
 
-![Safe Space Cleaner 真实隔离演示：审计、令牌确认和逐项清理报告](docs/demo.png)
+## 默认会删除
 
-## 为什么需要它
-
-普通清理脚本常把“体积大”误当成“可以删”。本项目把安全性写进执行机制：
-
-- 默认盘符为 `C:`，但支持指定其它 Windows 盘符。
-- 默认先审计，不在扫描阶段删除文件。
-- 自动清理只接受固定白名单、超过保留期、审计后未变化的文件。
-- 候选 ID 由规范化路径生成稳定哈希，重复审计可以对应同一对象。
-- 审计计划使用 SHA-256 令牌锁定；计划被修改后拒绝执行。
-- 执行时逐项复核盘符、根目录、路径边界、大小、时间戳、文件属性和保留期。
-- 不递归删除目录，不跟随符号链接、联接点或离线占位符。
-- 旧安装包、大文件、诊断文件、浏览器和开发缓存只进入候选清单，由用户选择。
-- WinSxS、Windows Installer、Windows Update 存储、休眠文件、页面文件、还原点、虚拟磁盘和用户内容绝不直接删除。
-- 每个计划文件都有最终状态：`Deleted`、`SkippedMissing`、`SkippedChanged` 或 `Failed`。
-- 深度候选按类别设置时间预算，超时或权限不足时明确标记为部分计量。
-
-## 三层交互策略
-
-| 层级 | 示例 | 默认动作 |
+| 类别 | 会删除什么 | 删除后的影响 |
 | --- | --- | --- |
-| 可直接清理 | 超过保留期的当前用户临时文件、Windows 临时文件、DirectX 着色器缓存 | 写入带令牌的精确计划；用户已经要求清理时可执行 |
-| 需要选择 | NVIDIA/浏览器/IDE 缓存、崩溃转储、pip/uv/npm 等开发缓存、旧安装包、归档和大文件 | 列出 ID、路径、大小、影响和推荐命令，等待逐项批准 |
-| 绝不直删 | 文档与下载内容、云文件、回收站、Windows.old、WinSxS、安装与更新存储、休眠/页面文件、还原点、虚拟磁盘 | 只说明风险和受支持入口 |
+| 用户临时文件 | `%TEMP%` 中超过保留期的文件 | 应用需要时会重新创建 |
+| Windows 临时文件 | `Windows\Temp` 中超过保留期且当前可安全访问的文件 | 锁定或受保护文件会自动跳过 |
+| 图形缓存 | DirectX、NVIDIA DX/GL 着色器缓存 | 游戏或图形应用首次启动可能短暂重新编译 |
+| 浏览器缓存 | 已关闭的 Edge、Chrome、Firefox 的 `Cache`、`Code Cache`、`GPUCache` 等纯缓存目录 | 网页资源会重新下载；账号和浏览记录不受影响 |
+| VS Code 缓存 | 已关闭 VS Code 后的 `Cache`、`Code Cache`、`GPUCache`、`CachedData` | VS Code 会按需重建 |
+| pip 缓存 | 通过 `py -m pip cache purge` 清理 | 后续安装可能重新下载包 |
+| uv 缓存 | 通过 `uv cache clean` 清理 | 后续操作可能重新下载或构建 |
+| npm 与 npx 缓存 | 通过 `npm cache clean --force` 和 `npm cache npx rm --force` 清理 | 后续安装或 npx 执行可能重新下载包 |
 
-“力度大”体现在深度发现和高收益排序，不体现在降低保护级别。
+纯缓存不设保留期。临时文件默认保留 30 天；使用 `Aggressive` 时默认保留 7 天。应用仍在运行、文件被锁定、审计后发生变化或路径校验失败时，一律跳过。
 
-## 安装
+## 只列出，由你决定
 
-克隆仓库后，把 skill 目录复制到 Codex skills 目录：
+| 类别 | 默认动作 |
+| --- | --- |
+| 旧安装包、压缩包 | 显示路径、大小、影响和候选 ID，不自动删除 |
+| 大文件 | 显示候选清单，不自动删除 |
+| 崩溃转储、Windows 错误报告 | 显示候选清单，避免误删诊断证据 |
+| NuGet、Gradle、Maven、Cargo、Conda 缓存或仓库 | 显示候选清单，避免破坏离线构建或环境 |
+| 回收站 | 只提示使用 Windows 界面检查 |
 
-```powershell
-git clone https://github.com/KangWang42/safe-space-cleaner.git
-Copy-Item -Recurse -Force `
-  .\safe-space-cleaner\safe-space-cleaner `
-  "$HOME\.codex\skills\safe-space-cleaner"
-```
+只有明确指定候选 ID 或完整路径后，skill 才会处理这些项目；一次确认不会扩展到同目录或其他类别。
 
-也可以直接让 Codex 使用仓库内的 `safe-space-cleaner/SKILL.md`。
+## 永远不会直接删除
 
-## 在 Codex 中使用
+| 保护对象 | 包括 |
+| --- | --- |
+| 个人文件 | `Downloads`、`Desktop`、`Documents`、图片、视频、云盘与同步目录 |
+| 浏览器资料 | 账号、Cookie、密码、历史记录、书签、扩展、会话和个人资料 |
+| Windows 核心与恢复数据 | `System32`、`WinSxS`、`Windows\Installer`、更新存储、`Windows.old`、分页文件、休眠文件、还原点和卷影副本 |
+| 项目与运行环境 | Git 仓库、项目目录、`.venv`、Conda 环境、R 库、`node_modules` 和本地数据库 |
+| 虚拟磁盘 | WSL、Docker、Hyper-V、Android 模拟器及其他虚拟磁盘文件 |
+| 特殊路径 | 符号链接、联接点、挂载点、离线占位符和归属不明的路径 |
 
-典型请求：
+文件再大也不会降低保护级别；skill 不会停止应用、服务、Windows Update 或安全软件来强制删除。
+
+## 使用
+
+将 `safe-space-cleaner` 目录复制到 Codex skills 目录，然后输入：
 
 ```text
-使用 $safe-space-cleaner 深度审计我的 C 盘。直接清理安全临时文件，
-把旧安装包、开发缓存和大文件列出来让我决定，并生成完整报告。
+使用 $safe-space-cleaner 清理我的 C 盘。默认临时文件和纯缓存可以清理，旧安装包和大文件列出来让我决定，并生成完整报告。
 ```
+
+只审计其他盘：
 
 ```text
 使用 $safe-space-cleaner 只审计 D 盘，不删除任何文件。
 ```
 
-```text
-根据上一次报告，清理我明确选择的 npm-cache 和 file-xxxx，
-其它候选保持不动。
-```
+报告默认写入 Git 已忽略的 `local-reports/`，包含 Markdown 摘要、逐项 CSV、结构化 JSON、审计计划与最终状态。真实报告含本机路径和使用痕迹，不应上传到公开仓库。
 
-## 直接运行 PowerShell
-
-要求 Windows PowerShell 5.1 或 PowerShell 7；不需要安装第三方依赖。
-
-只读深度审计：
-
-```powershell
-$script = '.\safe-space-cleaner\scripts\space-cleaner.ps1'
-& $script -Mode Audit -Drive C -Profile Aggressive -MinAgeDays 7 `
-  -DeepScan -ReviewTimeoutSeconds 180 -ReportDirectory .\local-reports
-```
-
-审阅生成的 Markdown 报告后，用完整计划路径和完整 SHA-256 令牌执行自动清理：
-
-```powershell
-& $script -Mode Clean -Drive C `
-  -PlanPath '.\local-reports\plan-<run-id>.json' `
-  -ConfirmationToken '<full-sha256-token>' `
-  -ReportDirectory .\local-reports
-```
-
-人机交互模式：
-
-```powershell
-& $script -Mode Interactive -Drive C -Profile Aggressive -DeepScan `
-  -ReportDirectory .\local-reports
-```
-
-交互模式仍然只执行“可直接清理”计划。候选清单必须按生成的 ID 或精确路径另行确认。
-
-不加 `-DeepScan` 时执行快速审计，仍生成自动计划、应用缓存、诊断文件和旧安装包清单；加上后进一步统计开发缓存和用户目录中的大文件。单个候选类别超过 `-ReviewTimeoutSeconds` 时停止该类别并标记为不完整，其数值只作为下限。
-
-## Safe 与 Aggressive
-
-| 配置 | 最短保留期 | 自动清理类别 |
-| --- | ---: | --- |
-| `Safe` | 至少 30 天 | 用户临时文件、Windows 临时文件 |
-| `Aggressive` | 默认 7 天，可调整 | 上述类别加 DirectX 着色器缓存 |
-
-两种配置都不会自动删除浏览器资料、开发缓存、崩溃转储、旧安装包、用户文件或系统受保护内容。
-
-## 报告内容
-
-每次审计生成：
-
-- `audit-<run-id>.md`：人读摘要、候选清单、影响与受保护项；
-- `audit-files-<run-id>.csv`：自动计划的完整文件清单；
-- `review-candidates-<run-id>.csv`：等待用户选择的完整候选清单；
-- `scan-issues-<run-id>.csv`：访问拒绝、时间预算和重解析跳过的完整记录；
-- `audit-<run-id>.json`：机器可读审计结果；
-- `plan-<run-id>.json`：由 SHA-256 令牌锁定的删除计划。
-
-执行后生成：
-
-- `cleanup-<run-id>.md`：清理结论、状态汇总和前后空间；
-- `cleanup-<run-id>.csv`：每个计划文件的最终动作；
-- `cleanup-<run-id>.json`：完整机器可读记录。
-
-报告包含本机路径和软件使用线索，默认写入 Git 忽略的 `local-reports/`。不要把真实报告提交到公开仓库。
-
-## 设计边界
-
-- 不格式化、分区、压缩系统盘或修改注册表。
-- 不安装、升级或卸载软件与运行环境。
-- 不自动请求管理员权限，不因“访问被拒绝”降低安全检查。
-- 不停止应用、Windows Update、系统服务或安全软件来强制删除。
-- 不用手工目录删除替代 DISM、Disk Cleanup、Storage Sense 或包管理器的官方清理入口。
-- 计划字节数与实际空闲空间变化分别报告；压缩、稀疏文件、硬链接和并发写入可能导致两者不同。
-- 异常检查读取结构化状态，不在任意文件路径中搜索 `warning`、`failed` 或 `nan`，避免文件名误报。
-
-详细规则见 [安全策略](safe-space-cleaner/references/safety-policy.md) 和 [Windows 清理类别与依据](safe-space-cleaner/references/windows-cleanup-categories.md)。
-
-## 调研依据
-
-策略以微软的 Storage Sense、Disk Cleanup、WinSxS 维护、Delivery Optimization 和休眠文档为边界，并使用 pip、uv、npm 的官方缓存命令。特别遵守以下结论：
-
-- Windows.old 删除后无法回退旧版 Windows；
-- WinSxS 不得手工删除；
-- Downloads 与云文件不应在默认清理中处理；
-- uv 明确要求使用 `uv cache clean`，不得直接修改缓存目录；
-- npm 将“回收磁盘空间”列为清缓存的有效理由，但要求显式 `--force`。
-
-直接链接集中在 [windows-cleanup-categories.md](safe-space-cleaner/references/windows-cleanup-categories.md)。
-
-## 验证
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test-space-cleaner.ps1
-& .\safe-space-cleaner\scripts\check-report.ps1 `
-  -Path .\local-reports\audit-<run-id>.json
-python "$HOME\.codex\skills\.system\skill-creator\scripts\quick_validate.py" `
-  .\safe-space-cleaner
-```
-
-隔离测试验证：旧文件删除、近期文件保留、审计后变化的文件保留、计划被修改后令牌拒绝，以及联接点目标不进入计划。
-
-## 许可证
+详细规则见[安全策略](safe-space-cleaner/references/safety-policy.md)和[清理类别与官方依据](safe-space-cleaner/references/windows-cleanup-categories.md)。
 
 [MIT](LICENSE)
-
-本工具涉及不可逆删除。请先阅读审计报告并保留可靠备份；项目不替代 Windows 官方备份、恢复或企业终端管理策略。

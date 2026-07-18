@@ -32,7 +32,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 
-$Script:SchemaVersion = '1.1'
+$Script:SchemaVersion = '1.2'
 $Script:PolicyVersion = '2026-07-18'
 $Script:Utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 $Script:UnsafeAttributes = [IO.FileAttributes]::ReparsePoint -bor [IO.FileAttributes]::System -bor [IO.FileAttributes]::Offline
@@ -270,6 +270,34 @@ function Get-DriveState {
     }
 }
 
+function Test-ProcessNameRunning {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($Name)) { return $false }
+    return [bool](Get-Process -Name $Name -ErrorAction SilentlyContinue)
+}
+
+function Add-FileCacheCandidate {
+    param(
+        [System.Collections.IList]$Candidates,
+        [string]$IdPrefix,
+        [string]$Root,
+        [string]$Description,
+        [string]$Impact,
+        [string]$ProcessName
+    )
+
+    if (-not [IO.Directory]::Exists($Root)) { return }
+    if (Test-ProcessNameRunning -Name $ProcessName) { return }
+    [void]$Candidates.Add([pscustomobject]@{
+        Id = Get-StableId -Prefix $IdPrefix -Value (Normalize-Path $Root)
+        Root = $Root
+        MinAgeDays = 0
+        Description = $Description
+        Impact = $Impact
+        Profiles = @('Safe', 'Aggressive')
+    })
+}
+
 function Get-AutoCategoryDefinitions {
     param(
         [string]$TargetDrive,
@@ -284,13 +312,22 @@ function Get-AutoCategoryDefinitions {
     }
 
     if (-not [string]::IsNullOrWhiteSpace($FixtureRoot)) {
-        return @([pscustomobject]@{
-            Id = 'fixture-temp'
-            Root = (Normalize-Path (Join-Path $FixtureRoot 'auto'))
-            MinAgeDays = $effectiveAge
-            Description = 'isolated test temporary files'
-            Impact = 'test files only'
-        })
+        return @(
+            [pscustomobject]@{
+                Id = 'fixture-temp'
+                Root = (Normalize-Path (Join-Path $FixtureRoot 'auto'))
+                MinAgeDays = $effectiveAge
+                Description = 'isolated test temporary files'
+                Impact = 'test files only'
+            },
+            [pscustomobject]@{
+                Id = 'fixture-cache'
+                Root = (Normalize-Path (Join-Path $FixtureRoot 'cache'))
+                MinAgeDays = 0
+                Description = 'isolated test pure cache'
+                Impact = 'test cache only'
+            }
+        )
     }
 
     $local = [Environment]::GetFolderPath('LocalApplicationData')
@@ -315,12 +352,49 @@ function Get-AutoCategoryDefinitions {
         [pscustomobject]@{
             Id = 'directx-shader-cache'
             Root = (Join-Path $local 'D3DSCache')
-            MinAgeDays = $effectiveAge
+            MinAgeDays = 0
             Description = 'DirectX shader cache'
             Impact = 'applications rebuild shaders when needed'
-            Profiles = @('Aggressive')
+            Profiles = @('Safe', 'Aggressive')
         }
     )
+
+    $fileCaches = New-Object 'System.Collections.Generic.List[object]'
+    Add-FileCacheCandidate -Candidates $fileCaches -IdPrefix 'nvidia-dx-cache' -Root (Join-Path $local 'NVIDIA\DXCache') -Description 'NVIDIA DirectX shader cache' -Impact 'GPU applications rebuild shaders when needed' -ProcessName ''
+    Add-FileCacheCandidate -Candidates $fileCaches -IdPrefix 'nvidia-gl-cache' -Root (Join-Path $local 'NVIDIA\GLCache') -Description 'NVIDIA OpenGL shader cache' -Impact 'GPU applications rebuild shaders when needed' -ProcessName ''
+
+    $browserDefinitions = @(
+        [pscustomobject]@{ Prefix = 'edge'; Base = (Join-Path $local 'Microsoft\Edge\User Data'); Process = 'msedge'; Description = 'Microsoft Edge cache' },
+        [pscustomobject]@{ Prefix = 'chrome'; Base = (Join-Path $local 'Google\Chrome\User Data'); Process = 'chrome'; Description = 'Google Chrome cache' }
+    )
+    foreach ($browser in $browserDefinitions) {
+        if ([IO.Directory]::Exists($browser.Base) -and -not (Test-ProcessNameRunning -Name $browser.Process)) {
+            $profiles = Get-ChildItem -LiteralPath $browser.Base -Force -Directory -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -eq 'Default' -or $_.Name -eq 'Guest Profile' -or $_.Name -eq 'System Profile' -or $_.Name -like 'Profile *' }
+            foreach ($profileDirectory in $profiles) {
+                foreach ($relativeCache in @('Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'DawnCache', 'GraphiteDawnCache')) {
+                    $cacheRoot = Join-Path $profileDirectory.FullName $relativeCache
+                    Add-FileCacheCandidate -Candidates $fileCaches -IdPrefix ($browser.Prefix + '-cache') -Root $cacheRoot -Description $browser.Description -Impact 'web content is downloaded again; sign-in and profile data remain protected' -ProcessName ''
+                }
+            }
+        }
+    }
+
+    $firefoxProfiles = Join-Path $local 'Mozilla\Firefox\Profiles'
+    if ([IO.Directory]::Exists($firefoxProfiles) -and -not (Test-ProcessNameRunning -Name 'firefox')) {
+        foreach ($profileDirectory in (Get-ChildItem -LiteralPath $firefoxProfiles -Force -Directory -ErrorAction SilentlyContinue)) {
+            Add-FileCacheCandidate -Candidates $fileCaches -IdPrefix 'firefox-cache' -Root (Join-Path $profileDirectory.FullName 'cache2') -Description 'Mozilla Firefox cache' -Impact 'web content is downloaded again; sign-in and profile data remain protected' -ProcessName ''
+        }
+    }
+
+    $roaming = [Environment]::GetFolderPath('ApplicationData')
+    if (-not (Test-ProcessNameRunning -Name 'code')) {
+        foreach ($relativeCache in @('Cache', 'Code Cache', 'GPUCache', 'CachedData')) {
+            Add-FileCacheCandidate -Candidates $fileCaches -IdPrefix 'vscode-cache' -Root (Join-Path $roaming ('Code\' + $relativeCache)) -Description 'Visual Studio Code cache' -Impact 'Code recreates cache data when needed' -ProcessName ''
+        }
+    }
+
+    $candidates += $fileCaches.ToArray()
 
     foreach ($candidate in $candidates) {
         if (($candidate.Profiles -contains $SelectedProfile) -and (Test-PathOnDrive -Path $candidate.Root -TargetDrive $TargetDrive)) {
@@ -420,30 +494,6 @@ function Get-ReviewDefinitions {
     if ($IncludeDeepScan) {
         $deep = @(
             [pscustomobject]@{
-                Id = 'pip-cache'
-                Category = 'pip download/build cache'
-                Root = (Join-Path $local 'pip\Cache')
-                Impact = 'future Python installs may need to download or rebuild packages'
-                RecommendedAction = 'py -m pip cache purge'
-                ProcessGuard = 'python or pip'
-            },
-            [pscustomobject]@{
-                Id = 'uv-cache'
-                Category = 'uv dependency cache'
-                Root = (Join-Path $local 'uv\cache')
-                Impact = 'future uv operations may re-download or rebuild; use uv, never delete the cache directly'
-                RecommendedAction = 'uv cache clean'
-                ProcessGuard = 'uv'
-            },
-            [pscustomobject]@{
-                Id = 'npm-cache'
-                Category = 'npm content cache'
-                Root = (Join-Path $local 'npm-cache')
-                Impact = 'future npm operations may download packages again'
-                RecommendedAction = 'npm cache clean --force'
-                ProcessGuard = 'node or npm'
-            },
-            [pscustomobject]@{
                 Id = 'nuget-packages'
                 Category = 'NuGet global packages cache'
                 Root = (Join-Path $profileHome '.nuget\packages')
@@ -502,6 +552,7 @@ function Get-ReviewInventory {
         [int]$LargeMinimumMB,
         [int]$ReviewTimeout,
         [string]$FixtureRoot,
+        [string[]]$ExcludedRoots,
         [System.Collections.IList]$Issues
     )
 
@@ -509,6 +560,10 @@ function Get-ReviewInventory {
     $isAdministrator = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     foreach ($definition in (Get-ReviewDefinitions -TargetDrive $TargetDrive -IncludeDeepScan $IncludeDeepScan -FixtureRoot $FixtureRoot)) {
         if (-not [IO.Directory]::Exists($definition.Root)) {
+            continue
+        }
+        $normalizedDefinitionRoot = Normalize-Path $definition.Root
+        if ($ExcludedRoots -contains $normalizedDefinitionRoot) {
             continue
         }
 
@@ -800,7 +855,8 @@ function Invoke-Audit {
         })
     }
 
-    $review = @(Get-ReviewInventory -TargetDrive $TargetDrive -IncludeDeepScan $IncludeDeepScan -LargeMinimumMB $LargeMinimumMB -ReviewTimeout $ReviewTimeout -FixtureRoot $FixtureRoot -Issues $issues)
+    $excludedReviewRoots = @($categories | ForEach-Object { Normalize-Path $_.Root })
+    $review = @(Get-ReviewInventory -TargetDrive $TargetDrive -IncludeDeepScan $IncludeDeepScan -LargeMinimumMB $LargeMinimumMB -ReviewTimeout $ReviewTimeout -FixtureRoot $FixtureRoot -ExcludedRoots $excludedReviewRoots -Issues $issues)
     $protected = @(Get-ProtectedInventory -TargetDrive $TargetDrive)
     $driveState = Get-DriveState -TargetDrive $TargetDrive
     $totalBytes = [Int64](($categorySummaries | Measure-Object Bytes -Sum).Sum)
@@ -1016,10 +1072,22 @@ function Invoke-Clean {
                     $reason = 'file no longer satisfies the age rule'
                 }
                 else {
-                    Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
-                    $status = 'Deleted'
-                    $reason = 'verified plan item deleted'
-                    $deletedBytes = [Int64]$item.Length
+                    try {
+                        Remove-Item -LiteralPath $file.FullName -Force -ErrorAction Stop
+                        $status = 'Deleted'
+                        $reason = 'verified plan item deleted'
+                        $deletedBytes = [Int64]$item.Length
+                    }
+                    catch [IO.IOException] {
+                        $nativeCode = $_.Exception.HResult -band 0xFFFF
+                        if ($nativeCode -notin @(32, 33)) { throw }
+                        $status = 'SkippedLocked'
+                        $reason = 'file is locked or in use by another process'
+                    }
+                    catch [UnauthorizedAccessException] {
+                        $status = 'SkippedAccessDenied'
+                        $reason = 'file access was denied; no elevation was requested'
+                    }
                 }
             }
         }

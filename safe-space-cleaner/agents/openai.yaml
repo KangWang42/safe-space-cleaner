@@ -1,4 +1,4 @@
 interface:
   display_name: "Safe Space Cleaner"
   short_description: "Audit and reclaim Windows disk space safely"
-  default_prompt: "Use $safe-space-cleaner to audit my C: drive, clean verified temporary files, and produce a reviewable report."
+  default_prompt: "Use $safe-space-cleaner to audit my C: drive, clean verified temporary files and pure caches, and produce a reviewable report."
