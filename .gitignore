@@ -1,0 +1,16 @@
+# Private, machine-specific reports
+local-reports/
+**/local-reports/
+*cleanup-report*.json
+*cleanup-report*.csv
+*cleanup-report*.md
+
+# Test and rendering artifacts
+tests/.tmp-fixture/
+test-run.log
+tmp/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/

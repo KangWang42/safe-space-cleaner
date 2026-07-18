@@ -1,0 +1,31 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-powershell:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run isolated safety regression
+        shell: powershell
+        run: |
+          powershell -NoProfile -ExecutionPolicy Bypass -File .\tests\test-space-cleaner.ps1
+      - name: Parse bundled scripts
+        shell: powershell
+        run: |
+          $failed = $false
+          Get-ChildItem .\safe-space-cleaner\scripts\*.ps1 | ForEach-Object {
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$errors) | Out-Null
+            if ($errors) {
+              $failed = $true
+              $errors | Format-List *
+            }
+          }
+          if ($failed) { exit 1 }
